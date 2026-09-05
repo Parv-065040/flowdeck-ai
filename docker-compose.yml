@@ -1,0 +1,94 @@
+# Flowdeck AI — one-command startup for the whole backend stack.
+# Ollama and the GPU stay on the host machine (Docker Desktop GPU passthrough on Windows/WSL2
+# is possible but adds fragility right before a deadline) — everything else runs in containers.
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in real values (Groq/Gemini API keys are the only
+#      required ones for Day 1 — Google Calendar and Agora keys can wait until you need them).
+#   2. docker compose up --build
+#
+# Ollama is OPTIONAL (see OLLAMA_ENABLED in .env) — the primary reasoning chain is cloud-hosted
+# (Groq + Gemini), so no local GPU is needed to run this stack. Only start Ollama if you've set
+# OLLAMA_ENABLED=true to demonstrate the self-hosted fallback tier.
+#
+# This brings up: Postgres (deal sheet / CRM data), Qdrant (RAG vector store), and the FastAPI backend.
+# The frontend is run separately with `npm run dev` during development (see frontend/README.md) since
+# hot-reload through Docker adds friction with no benefit this late in a hackathon sprint.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flowdeck-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flowdeck}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowdeck_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-flowdeck}
+    ports:
+      - "5432:5432"
+    volumes:
+      - flowdeck_pg_data:/var/lib/postgresql/data
+      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowdeck}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: flowdeck-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - flowdeck_qdrant_data:/qdrant/storage
+    # No healthcheck here: recent Qdrant images are stripped down and often lack wget/curl,
+    # which made the previous CMD-SHELL healthcheck fail even though Qdrant itself was fine.
+    # The backend's own /healthz endpoint checks Qdrant reachability via HTTP from Python instead,
+    # and every tool that touches Qdrant already falls back gracefully on failure (see tools/rag.py).
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flowdeck-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-flowdeck}:${POSTGRES_PASSWORD:-flowdeck_dev_password}@postgres:5432/${POSTGRES_DB:-flowdeck}
+      QDRANT_URL: http://qdrant:6333
+      # Reasoning: Groq primary, Gemini secondary — both cloud-hosted, no GPU needed
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      # Optional 4th tier, off by default
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
+      GOOGLE_CALENDAR_CREDENTIALS_JSON: ${GOOGLE_CALENDAR_CREDENTIALS_JSON:-}
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+      AGORA_APP_ID: ${AGORA_APP_ID:-}
+      AGORA_APP_CERTIFICATE: ${AGORA_APP_CERTIFICATE:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # needed on Linux; no-op on Docker Desktop
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started # no healthcheck on qdrant itself — see note above; backend/healthz covers it
+    volumes:
+      - ./backend:/app # bind-mount for live reload during dev; drop this for a hardened prod image
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  flowdeck_pg_data:
+  flowdeck_qdrant_data:
