@@ -97,4 +97,4 @@ Required in `.env` (see `.env.example` for the full template):
 
 ## Team
 
-Team Spartans — [names / roles here]
+Team Spartans 
