@@ -1,0 +1,19 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+httpx==0.27.2
+asyncpg==0.29.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
+qdrant-client==1.11.1
+sentence-transformers==3.1.1
+google-api-python-client==2.146.0
+google-auth==2.35.0
+python-dotenv==1.0.1
+
+# Day 2: Agora Conversational AI integration.
+# NOTE — a real quirk in Agora's own docs (confirmed 31 Aug/1 Sep 2026 build): the pip package is
+# named agora-agents (plural) but the Python import is `from agora_agent import ...` (singular).
+# If the import fails after installing, this mismatch is the first thing to check — it's a
+# documented-as-written oddity, not a typo introduced here.
+agora-agents
+agora-token-builder

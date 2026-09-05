@@ -1,100 +1,71 @@
-# Flowdeck AI
+# Flowdeck AI — Backend
 
-A live, voice-based AI sales & negotiation agent. A prospective customer calls in and talks to
-**Rae**, an AI sales rep, over a real-time voice call. Rae checks calendar availability, books
-real meetings, answers product questions from a knowledge base, logs requirements and
-objections, and escalates to a human when needed — all through natural voice conversation, not
-a scripted IVR tree.
+Python FastAPI service that Agora's Conversational AI Engine calls as a "Bring Your Own LLM"
+endpoint on every conversational turn.
 
-Built by **Team Spartans** for [hackathon name].
+## Structure
 
-**Demo video:** [link here]
+```
+backend/
+├── main.py                   # FastAPI entrypoint — /healthz, /calls/*, /v1/chat/completions
+├── config.py                 # Pydantic settings, reads .env
+├── agora_integration.py      # /api/token, /api/invite-agent, /api/stop-conversation, /api/config
+│                              # — builds the Agora Agent (STT/TTS/LLM config), owns call_id continuity
+├── db/
+│   ├── connection.py         # asyncpg connection pool
+│   └── schema.sql            # calls, tool_calls, deal_sheets, objections tables
+├── llm/
+│   ├── agent_loop.py         # Tool-calling reasoning loop (run_agent_turn)
+│   ├── reasoning_chain.py    # Groq → Gemini → Ollama → rule-based fallback chain
+│   └── rule_based_fallback.py
+├── tools/
+│   ├── definitions.py        # SYSTEM_PROMPT + tool schemas
+│   ├── executor.py           # Executes a tool call, writes to Postgres
+│   ├── google_calendar.py    # Real Google Calendar API integration
+│   ├── rag.py                # Qdrant-backed knowledge base lookup
+│   └── seed_knowledge_base.py
+└── scripts/
+    └── test_reasoning_locally.py   # Standalone reasoning-chain test, no voice stack required
+```
 
----
+## Endpoints
 
-## What it does
-
-- Full real-time voice conversation with an AI sales agent (not a chatbot with a voice bolted on)
-- Real Google Calendar integration — Rae checks live availability and books actual meetings
-- RAG-backed product knowledge base (Qdrant) so Rae can answer questions accurately
-- Objection and requirement logging during the call
-- Escalation to a human rep when the conversation needs it
-- A live "deal sheet" in the frontend that fills itself in as the call progresses — contact name,
-  use case, budget signal, competitor mentions, next action
-
-## Tech stack
-
-| Layer | Technology |
+| Route | Purpose |
 |---|---|
-| Voice infrastructure | Agora Conversational AI Engine (STT via Deepgram, TTS via MiniMax, RTC) |
-| Backend | Python FastAPI — OpenAI-compatible `/v1/chat/completions` endpoint (Agora's Bring-Your-Own-LLM contract) |
-| Reasoning | Groq (primary) → Gemini (fallback) → local Ollama (optional) → rule-based (last resort) |
-| Frontend | React + Tailwind |
-| Data | Postgres (calls, tool logs, deal sheets, objections), Qdrant (RAG vector store) |
-| Calendar | Google Calendar API (real booking; falls back to mock slots if unconfigured) |
-| Local dev tunnel | Cloudflare Tunnel (exposes `localhost:8000` for Agora's cloud to reach) |
+| `POST /v1/chat/completions` | The endpoint Agora's Conversational AI Engine calls each turn. OpenAI-compatible request/response shape. |
+| `GET /healthz` | Live status check for Postgres, Qdrant, Groq, Gemini. |
+| `POST /api/token` | Issues an Agora RTC token for the frontend to join a channel. |
+| `POST /api/invite-agent` | Starts an Agora Conversational AI agent session for a channel. |
+| `POST /api/stop-conversation` | Cleanly ends an agent session. |
+| `GET /api/config` | Returns current Agora/session config to the frontend. |
 
-See [`docs/TECHNICAL_ARCHITECTURE.md`](docs/TECHNICAL_ARCHITECTURE.md) for the full architecture
-writeup and [`docs/AGORA_INTEGRATION.md`](docs/AGORA_INTEGRATION.md) for details on how Agora's
-technologies are integrated.
-
-## Repo structure
-
-```
-flowdeck-ai/
-├── backend/           # FastAPI service — reasoning loop, tools, Agora session management
-├── frontend/          # React + Tailwind product UI
-├── demo/              # Bare-bones HTML test harness (fallback/reference, not the main UI)
-├── docs/              # Architecture, Agora integration, and setup docs
-├── docker-compose.yml # Orchestrates backend + postgres + qdrant
-└── .env.example       # Template for all required secrets/config
-```
-
-## Quickstart
-
-Requires: Docker, Node.js, and a `cloudflared` install.
+## Running locally (without Docker)
 
 ```bash
-# 1. Copy env template and fill in your keys (see "Environment" below)
-cp .env.example .env
-
-# 2. Start backend + postgres + qdrant
-docker compose up --build -d
-
-# 3. In a separate terminal, open a public tunnel to the backend (stays open)
-cloudflared tunnel --url http://localhost:8000
-
-# 4. In a separate terminal, run the frontend
-cd frontend
-npm install
-npm run dev
+cd backend
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
 ```
 
-Paste the `cloudflared` URL into the frontend's **"Public backend URL"** field before starting a
-call. Use a fresh channel name per test call to avoid stale-state issues.
+Requires Postgres and Qdrant running separately, or use `docker compose up postgres qdrant` from
+the repo root and point `.env` at them.
 
-## Environment
+## Testing the reasoning chain without a live call
 
-Required in `.env` (see `.env.example` for the full template):
+```bash
+python scripts/test_reasoning_locally.py
+```
 
-- `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE` — from [console.agora.io](https://console.agora.io),
-  project must have Conversational AI / Voice Agent Builder enabled, and RTM enabled
-  (`agora project feature enable rtm` via the Agora CLI)
-- `GROQ_API_KEY`, `GEMINI_API_KEY` — reasoning tiers
-- `GOOGLE_CALENDAR_CREDENTIALS_JSON`, `GOOGLE_CALENDAR_ID` — optional; falls back to mock slots
-  if absent. Needs a Google Cloud service account with Calendar API enabled, and the target
-  calendar shared with that service account's email.
+Exercises `agent_loop.py` / `reasoning_chain.py` directly — useful for iterating on tool-calling
+behavior without spinning up Agora, Cloudflare, or the frontend.
 
-## Known limitations (accepted for hackathon submission)
+## Known bug classes to watch for (see root docs for full debugging history)
 
-- Live transcript panel was removed before submission — it was built but failed to initialize;
-  the voice call itself never depended on it. See `docs/TECHNICAL_ARCHITECTURE.md` for retry notes.
-- No token-level streaming from the LLM to Agora — the backend runs its full reasoning loop, then
-  sends one complete response.
-- Cloudflare's free quick tunnels generate a new URL on every restart — fine for local dev/demo,
-  not a permanent deployment.
-- No authentication on backend endpoints — fine for a hackathon demo.
-
-## Team
-
-Team Spartans 
+- **Trailing whitespace in any URL fed to Agora's Start Agent API silently breaks the LLM
+  endpoint** — no error surfaces, Agora just never calls the backend. `.strip()` is applied in
+  `agora_integration.py`, but re-check if this class of bug resurfaces.
+- **Calendar slot strings must round-trip through the exact RFC3339 format `get_available_slots()`
+  produces** before being sent to `book_slot()` — freeform display strings will fail every booking.
+- **The `calls` row must exist before the tool-calling loop runs**, not just before logging
+  afterward, or a `book_meeting` tool call can hit a missing foreign key and crash the turn.
